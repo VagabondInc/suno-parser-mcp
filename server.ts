@@ -31,7 +31,7 @@ fastify.get("/parse", async (req, reply) => {
     let songData = null;
     let allScriptData = {};
     
-    // Try __NEXT_DATA__ script
+    // Try __NEXT_DATA__ script (traditional Next.js)
     const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
     if (nextDataMatch) {
       try {
@@ -41,6 +41,56 @@ fastify.get("/parse", async (req, reply) => {
         allScriptData.nextData = nextData;
       } catch (e) {
         // Continue to other extraction methods
+      }
+    }
+    
+    // Try Next.js App Router streaming format (self.__next_f.push)
+    if (!songData) {
+      const nextfMatches = html.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\\.[^"]*)*)"\]\)/g);
+      if (nextfMatches) {
+        for (const match of nextfMatches) {
+          try {
+            const jsonMatch = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\\.[^"]*)*)"\]\)/);
+            if (jsonMatch && jsonMatch[1]) {
+              const unescaped = jsonMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+              
+              // Try to parse as JSON
+              if (unescaped.includes('"title"') || unescaped.includes('"display_name"') || unescaped.includes('"metadata"')) {
+                const jsonData = JSON.parse(unescaped);
+                if (jsonData.title || jsonData.display_name || jsonData.metadata) {
+                  songData = jsonData;
+                  break;
+                }
+                
+                // Look for nested song data
+                function findSongData(obj: any): any {
+                  if (!obj || typeof obj !== 'object') return null;
+                  if (obj.title && (obj.metadata || obj.gpt_description_prompt)) return obj;
+                  if (Array.isArray(obj)) {
+                    for (const item of obj) {
+                      const found = findSongData(item);
+                      if (found) return found;
+                    }
+                  } else {
+                    for (const key in obj) {
+                      const found = findSongData(obj[key]);
+                      if (found) return found;
+                    }
+                  }
+                  return null;
+                }
+                
+                const nestedSong = findSongData(jsonData);
+                if (nestedSong) {
+                  songData = nestedSong;
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            // Continue to next match
+          }
+        }
       }
     }
     
@@ -100,7 +150,7 @@ fastify.get("/parse", async (req, reply) => {
       const patterns = [
         /prompt["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON prompt field
         /lyrics["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON lyrics field
-        /"gpt_description_prompt":\s*"([^"]+)"/, // GPT prompt
+        /"gpt_description_prompt":\s*"([^"]*(?:\\.[^"]*)*)"/g, // GPT prompt with escapes
         /class=["\'][^"\']*lyrics[^"\']*["\'][^>]*>([^<]+)/, // CSS class
         /data-[^=]*lyrics[^=]*=["\']([^"\']+)["\']/, // Data attribute
         /"prompt":\s*"([^"]*(?:\\.[^"]*)*)"/g, // Escaped JSON prompt with proper handling
@@ -108,16 +158,20 @@ fastify.get("/parse", async (req, reply) => {
         /\[Chorus[^\]]*\][\s\S]*?\[\/Chorus\]/gi, // Chorus blocks
         /(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Outro\]|\[Intro\])[\s\S]*?(?=\[|$)/gi, // Any lyric sections
         /"([^"]*\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\s\S]*?)"/, // Quoted lyric blocks
-        /(?:^|\n)([A-Z][^.\n]*\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\s\S]*?)(?:\n\n|$)/ // Plain text lyric blocks
+        /(?:^|\n)([A-Z][^.\n]*\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\s\S]*?)(?:\n\n|$)/, // Plain text lyric blocks
+        // More aggressive patterns for streaming data
+        /\\u[0-9a-f]{4}.*?\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\\s\\S]*?/gi,
+        /"[^"]*(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Intro\]|\[Outro\])[^"]*"/gi
       ];
       
       for (const pattern of patterns) {
         const matches = html.match(pattern);
         if (matches) {
-          for (const match of (Array.isArray(matches) ? matches : [matches])) {
+          const matchArray = Array.isArray(matches) ? matches : [matches];
+          for (const match of matchArray) {
             const lyricText = Array.isArray(match) ? match[1] : match;
             if (lyricText && lyricText.length > 20 && (lyricText.includes('[Verse') || lyricText.includes('[Chorus') || lyricText.includes('\\n') || lyricText.split('\n').length > 2)) {
-              lyrics = lyricText.replace(/\\n/g, '\n').replace(/\\"/g, '"').trim();
+              lyrics = lyricText.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
               break;
             }
           }
