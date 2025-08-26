@@ -1,9 +1,8 @@
-// server.ts — Vercel/Node server with Playwright (Chromium) to render and scrape SPA pages
-// Deploy on Vercel or any Node host. Ensure Playwright Chromium is installed.
-// Package.json deps: { "playwright": "^1.46.0", "fastify": "^4.26.2" }
+// server.ts — Vercel/Node server for parsing Suno.com song pages
+// Extracts song metadata from embedded JSON without requiring browser automation
+// Package.json deps: { "fastify": "^4.26.2" }
 
 import Fastify from "fastify";
-import { chromium } from "playwright";
 
 const fastify = Fastify({ logger: false });
 
@@ -14,73 +13,86 @@ fastify.get("/parse", async (req, reply) => {
     return;
   }
 
-  let browser;
   try {
-    browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-    const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
-    const page = await context.newPage();
-
-    // Navigate and wait for network to settle to catch SPA content
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForLoadState("networkidle", { timeout: 60000 });
-
-    // Heuristic selectors: Suno's UI may change; we search by text labels first.
-    // Grab title/artist if available
-    const title = await page.title().catch(() => null);
-
-    // Try to locate an obvious artist/name element
-    const artist =
-      (await page.locator('a[href^="/artist/"], a[href*="/user/"]').first().textContent().catch(() => null)) ||
-      (await page.locator('[data-testid*="artist"], [class*="artist"]').first().textContent().catch(() => null)) ||
-      null;
-
-    // Find "Lyrics" and "Style(s)" sections by header text
-    async function extractSection(labelTexts: string[]) {
-      for (const label of labelTexts) {
-        const heading = page.locator(`:text("${label}")`).first();
-        if (await heading.count()) {
-          // Try sibling/parent containers to gather text content
-          const container = heading.locator("xpath=..");
-          const next = container.locator("xpath=following-sibling::*").first();
-          const text =
-            (await next.textContent().catch(() => null)) ||
-            (await container.textContent().catch(() => null));
-          if (text) return clean(text.replace(label, ""));
-        }
+    // Fetch the HTML page
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
-      // Fallback: search for elements whose innerText includes the label
-      const candidate = page.locator("body *").filter({ hasText: new RegExp(labelTexts.join("|"), "i") }).first();
-      if (await candidate.count()) return clean((await candidate.textContent().catch(() => "")) || "");
-      return null;
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-
+    
+    const html = await response.text();
+    
+    // Extract JSON data from Next.js __NEXT_DATA__ script
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+    let songData = null;
+    
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        // Navigate through Next.js data structure to find song info
+        const pageProps = nextData?.props?.pageProps;
+        songData = pageProps?.song || pageProps?.data;
+      } catch (e) {
+        // Fall back to regex extraction if JSON parsing fails
+      }
+    }
+    
+    // Fallback: Extract data using regex patterns
+    let title = songData?.title || null;
+    let artist = songData?.display_name || songData?.user?.display_name || null;
+    let lyrics = songData?.metadata?.prompt || null;
+    let styles = songData?.metadata?.tags || null;
+    
+    // Additional fallback extractions from HTML if JSON data incomplete
+    if (!title) {
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/);
+      title = titleMatch ? titleMatch[1].replace(' | Suno', '').trim() : null;
+    }
+    
+    if (!lyrics && html.includes('Lyrics')) {
+      // Try to extract lyrics from visible text patterns
+      const lyricsMatch = html.match(/Lyrics[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
+      if (lyricsMatch) {
+        lyrics = lyricsMatch[1].replace(/<[^>]+>/g, '').trim() || null;
+      }
+    }
+    
+    if (!styles && html.includes('Style')) {
+      // Try to extract styles from visible text patterns
+      const stylesMatch = html.match(/Style[s]?[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
+      if (stylesMatch) {
+        styles = stylesMatch[1].replace(/<[^>]+>/g, '').trim() || null;
+      }
+    }
+    
+    // Clean up extracted text
     function clean(s?: string | null) {
       return s
-        ?.replace(/\u00a0/g, " ")
-        ?.replace(/\s+\n/g, "\n")
-        ?.replace(/\n{3,}/g, "\n\n")
+        ?.replace(/\u00a0/g, ' ')
+        ?.replace(/<[^>]+>/g, '')
+        ?.replace(/\s+/g, ' ')
+        ?.replace(/\n{3,}/g, '\n\n')
         ?.trim() || null;
     }
-
-    const lyrics = await extractSection(["Lyrics", "LYRICS"]);
-    const styles = await extractSection(["Style", "Styles", "STYLE", "STYLES"]);
-
-    // Provide a short HTML snippet for debugging if needed
-    const rawHtmlSnippet = await page.evaluate(() => document.body.innerHTML.slice(0, 2000)).catch(() => null);
-
-    await context.close();
-    await browser.close();
-
+    
+    // Provide debug info
+    const rawHtmlSnippet = html.slice(0, 2000);
+    
     reply.send({
       url,
-      title: title || null,
-      artist: artist ? artist.trim() : null,
-      lyrics,
-      styles,
+      title: clean(title),
+      artist: clean(artist),
+      lyrics: clean(lyrics),
+      styles: clean(styles),
       rawHtmlSnippet,
+      songData: songData ? JSON.stringify(songData).slice(0, 500) : null // Debug info
     });
   } catch (err: any) {
-    if (browser) await browser.close().catch(() => {});
     reply.code(500).send({ error: "Failed to fetch or parse page", details: err?.message });
   }
 });
