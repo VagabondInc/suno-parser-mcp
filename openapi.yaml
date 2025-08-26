@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Suno Parser API
   description: MCP server for parsing Suno.com song pages using fetch and JSON extraction
@@ -9,6 +9,7 @@ servers:
 paths:
   /:
     get:
+      operationId: healthCheck
       summary: Health check endpoint
       responses:
         '200':
@@ -23,6 +24,7 @@ paths:
                     example: true
   /parse:
     get:
+      operationId: parseSong
       summary: Parse Suno.com song page
       description: Scrapes a Suno.com song page to extract title, artist, lyrics, and styles
       parameters:
@@ -90,6 +92,7 @@ paths:
                     description: Additional error details
   /extract:
     get:
+      operationId: extractFullData
       summary: Extract full JSON data from Suno.com song page
       description: Extracts and organizes all available JSON data from a Suno.com song page in structured sections
       parameters:
@@ -228,6 +231,7 @@ paths:
                     description: Additional error details
   /openapi.yaml:
     get:
+      operationId: getOpenApiSpec
       summary: Get OpenAPI specification
       responses:
         '200':
