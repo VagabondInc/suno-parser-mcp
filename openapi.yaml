@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Suno Parser API
-  description: MCP server for parsing Suno.com song pages using Playwright
+  description: MCP server for parsing Suno.com song pages using fetch and JSON extraction
   version: 1.0.0
 servers:
   - url: http://localhost:3000
@@ -85,6 +85,144 @@ paths:
                   error:
                     type: string
                     example: "Failed to fetch or parse page"
+                  details:
+                    type: string
+                    description: Additional error details
+  /extract:
+    get:
+      summary: Extract full JSON data from Suno.com song page
+      description: Extracts and organizes all available JSON data from a Suno.com song page in structured sections
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: The Suno.com song URL to extract data from
+          schema:
+            type: string
+            format: uri
+            example: "https://suno.com/song/abc123-def456"
+      responses:
+        '200':
+          description: Successfully extracted and organized song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    description: The original URL that was extracted
+                  extraction_timestamp:
+                    type: string
+                    format: date-time
+                    description: ISO timestamp when extraction occurred
+                  song_info:
+                    type: object
+                    description: Core song information
+                    properties:
+                      id:
+                        type: string
+                      title:
+                        type: string
+                      display_name:
+                        type: string
+                      created_at:
+                        type: string
+                      status:
+                        type: string
+                      model_name:
+                        type: string
+                      gpt_description_prompt:
+                        type: string
+                  user_info:
+                    type: object
+                    description: Artist/user information
+                    properties:
+                      id:
+                        type: string
+                      display_name:
+                        type: string
+                      handle:
+                        type: string
+                      avatar_image_url:
+                        type: string
+                      is_verified:
+                        type: boolean
+                  media:
+                    type: object
+                    description: Audio and media URLs
+                    properties:
+                      audio_url:
+                        type: string
+                      video_url:
+                        type: string
+                      image_url:
+                        type: string
+                      image_large_url:
+                        type: string
+                  metadata:
+                    type: object
+                    description: Song generation metadata
+                    properties:
+                      prompt:
+                        type: string
+                      tags:
+                        type: string
+                      duration:
+                        type: number
+                      type:
+                        type: string
+                  engagement:
+                    type: object
+                    description: Social engagement metrics
+                    properties:
+                      play_count:
+                        type: integer
+                      upvote_count:
+                        type: integer
+                      is_liked:
+                        type: boolean
+                      reaction:
+                        type: string
+                  technical:
+                    type: object
+                    description: Technical song details
+                  raw_next_data:
+                    type: object
+                    description: Raw Next.js data for debugging
+                  full_song_data:
+                    type: object
+                    description: Complete song object from JSON
+        '400':
+          description: Invalid or missing URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Provide a valid suno.com song URL at /song/<id>"
+        '404':
+          description: No JSON data found on page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "No Next.js data found on page"
+        '500':
+          description: Server error during extraction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Failed to fetch or extract data"
                   details:
                     type: string
                     description: Additional error details
