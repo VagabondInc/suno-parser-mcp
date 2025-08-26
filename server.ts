@@ -151,16 +151,26 @@ fastify.get("/parse", async (req, reply) => {
       if (typeof promptRef === 'string' && promptRef.startsWith('$')) {
         const promptId = promptRef.substring(1); // Remove the $ prefix (e.g., "18")
         
-        // Look for the simple streaming format: "18:T[hash],[lyrics content]"
-        // This pattern captures the direct lyrics, not the ones nested in JSON objects
-        const simplePattern = new RegExp(`"${promptId}:T[a-f0-9]+,([\\s\\S]*?)(?="\])`);
-        const simpleMatch = html.match(simplePattern);
+        // Find all matches of the prompt pattern
+        const promptPattern = new RegExp(`"${promptId}:T[a-f0-9]+,([\\s\\S]*?)(?="\]|$)`, 'g');
+        const allMatches = [...html.matchAll(promptPattern)];
         
-        if (simpleMatch && simpleMatch[1]) {
-          const content = simpleMatch[1];
-          // Basic validation that this looks like lyrics content
-          if (content && content.length > 20 && (content.includes('[') || content.includes('\n') || content.includes('\\n'))) {
-            lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+        for (const match of allMatches) {
+          if (match[1]) {
+            // Get the full chunk containing this match
+            const matchStart = html.lastIndexOf('self.__next_f.push', match.index || 0);
+            const matchEnd = html.indexOf('])', match.index || 0) + 2;
+            const fullChunk = html.substring(matchStart, matchEnd);
+            
+            // Skip chunks that contain "clip" (these contain nested persona lyrics)
+            if (!fullChunk.includes('"clip"')) {
+              const content = match[1];
+              // Basic validation that this looks like lyrics content
+              if (content && content.length > 20) {
+                lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+                break;
+              }
+            }
           }
         }
       }
