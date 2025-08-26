@@ -64,8 +64,17 @@ fastify.get("/parse", async (req, reply) => {
     // Fallback: Extract data using regex patterns
     let title = songData?.title || null;
     let artist = songData?.display_name || songData?.user?.display_name || null;
-    let lyrics = songData?.metadata?.prompt || null;
+    let lyrics = songData?.metadata?.prompt || songData?.gpt_description_prompt || null;
     let styles = songData?.metadata?.tags || null;
+    
+    // Enhanced JSON data extraction from Next.js props
+    if ((allScriptData as any).nextData?.props?.pageProps) {
+      const props = (allScriptData as any).nextData.props.pageProps;
+      if (props.song) {
+        lyrics = lyrics || props.song.metadata?.prompt || props.song.gpt_description_prompt;
+        styles = styles || props.song.metadata?.tags;
+      }
+    }
     
     // Extract from meta tags and other HTML patterns
     if (!title) {
@@ -93,14 +102,26 @@ fastify.get("/parse", async (req, reply) => {
         /lyrics["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON lyrics field
         /"gpt_description_prompt":\s*"([^"]+)"/, // GPT prompt
         /class=["\'][^"\']*lyrics[^"\']*["\'][^>]*>([^<]+)/, // CSS class
-        /data-[^=]*lyrics[^=]*=["\']([^"\']+)["\']/ // Data attribute
+        /data-[^=]*lyrics[^=]*=["\']([^"\']+)["\']/, // Data attribute
+        /"prompt":\s*"([^"]*(?:\\.[^"]*)*)"/g, // Escaped JSON prompt with proper handling
+        /\[Verse[^\]]*\][\s\S]*?\[\/Verse\]/gi, // Verse blocks
+        /\[Chorus[^\]]*\][\s\S]*?\[\/Chorus\]/gi, // Chorus blocks
+        /(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Outro\]|\[Intro\])[\s\S]*?(?=\[|$)/gi, // Any lyric sections
+        /"([^"]*\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\s\S]*?)"/, // Quoted lyric blocks
+        /(?:^|\n)([A-Z][^.\n]*\[(?:Verse|Chorus|Bridge|Intro|Outro)[^\]]*\][\s\S]*?)(?:\n\n|$)/ // Plain text lyric blocks
       ];
       
       for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match && match[1] && match[1].length > 10) {
-          lyrics = match[1].trim();
-          break;
+        const matches = html.match(pattern);
+        if (matches) {
+          for (const match of (Array.isArray(matches) ? matches : [matches])) {
+            const lyricText = Array.isArray(match) ? match[1] : match;
+            if (lyricText && lyricText.length > 20 && (lyricText.includes('[Verse') || lyricText.includes('[Chorus') || lyricText.includes('\\n') || lyricText.split('\n').length > 2)) {
+              lyrics = lyricText.replace(/\\n/g, '\n').replace(/\\"/g, '"').trim();
+              break;
+            }
+          }
+          if (lyrics) break;
         }
       }
     }
@@ -112,14 +133,35 @@ fastify.get("/parse", async (req, reply) => {
         /style["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON style field
         /genre["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON genre field
         /class=["\'][^"\']*style[^"\']*["\'][^>]*>([^<]+)/, // CSS class
-        /class=["\'][^"\']*tag[^"\']*["\'][^>]*>([^<]+)/ // Tag class
+        /class=["\'][^"\']*tag[^"\']*["\'][^>]*>([^<]+)/, // Tag class
+        /"tags":\s*"([^"]*(?:\\.[^"]*)*)"/g, // Escaped JSON tags with proper handling
+        /"style":\s*"([^"]*(?:\\.[^"]*)*)"/g, // Escaped JSON style
+        /"genre":\s*"([^"]*(?:\\.[^"]*)*)"/g, // Escaped JSON genre
+        /(?:experimental|ballad|ambient|rock|pop|jazz|classical|electronic|hip-hop|country|folk|blues|r&b|reggae|metal|punk|indie|alternative|dance|house|techno|dubstep|trap|lo-fi|chillout|acoustic)[,\s]*(?:experimental|ballad|ambient|rock|pop|jazz|classical|electronic|hip-hop|country|folk|blues|r&b|reggae|metal|punk|indie|alternative|dance|house|techno|dubstep|trap|lo-fi|chillout|acoustic)[,\s]*(?:experimental|ballad|ambient|rock|pop|jazz|classical|electronic|hip-hop|country|folk|blues|r&b|reggae|metal|punk|indie|alternative|dance|house|techno|dubstep|trap|lo-fi|chillout|acoustic)?/gi // Common genre combinations
       ];
       
       for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match && match[1]) {
-          styles = match[1].trim();
-          break;
+        const matches = html.match(pattern);
+        if (matches) {
+          for (const match of (Array.isArray(matches) ? matches : [matches])) {
+            const styleText = Array.isArray(match) ? match[1] || match[0] : match;
+            if (styleText && styleText.length > 2) {
+              styles = styleText.replace(/\\"/g, '"').trim();
+              break;
+            }
+          }
+          if (styles) break;
+        }
+      }
+      
+      // Try to find style tags in meta descriptions
+      if (!styles) {
+        const metaDesc = html.match(/<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*)["\'][^>]*>/);
+        if (metaDesc && metaDesc[1]) {
+          const genreMatch = metaDesc[1].match(/(experimental|ballad|ambient|rock|pop|jazz|classical|electronic|hip-hop|country|folk|blues|r&b|reggae|metal|punk|indie|alternative|dance|house|techno|dubstep|trap|lo-fi|chillout|acoustic)/i);
+          if (genreMatch) {
+            styles = genreMatch[1];
+          }
         }
       }
     }
