@@ -1,0 +1,100 @@
+openapi: 3.0.3
+info:
+  title: Suno Parser API
+  description: MCP server for parsing Suno.com song pages using Playwright
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Development server
+paths:
+  /:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+  /parse:
+    get:
+      summary: Parse Suno.com song page
+      description: Scrapes a Suno.com song page to extract title, artist, lyrics, and styles
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: The Suno.com song URL to parse
+          schema:
+            type: string
+            format: uri
+            example: "https://suno.com/song/abc123-def456"
+      responses:
+        '200':
+          description: Successfully parsed song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    description: The original URL that was parsed
+                  title:
+                    type: string
+                    nullable: true
+                    description: Song title extracted from page
+                  artist:
+                    type: string
+                    nullable: true
+                    description: Artist name extracted from page
+                  lyrics:
+                    type: string
+                    nullable: true
+                    description: Song lyrics extracted from page
+                  styles:
+                    type: string
+                    nullable: true
+                    description: Music styles/genres extracted from page
+                  rawHtmlSnippet:
+                    type: string
+                    nullable: true
+                    description: First 2000 characters of page HTML for debugging
+        '400':
+          description: Invalid or missing URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Provide a valid suno.com song URL at /song/<id>"
+        '500':
+          description: Server error during parsing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Failed to fetch or parse page"
+                  details:
+                    type: string
+                    description: Additional error details
+  /openapi.yaml:
+    get:
+      summary: Get OpenAPI specification
+      responses:
+        '200':
+          description: OpenAPI YAML specification
+          content:
+            text/yaml:
+              schema:
+                type: string
