@@ -149,18 +149,44 @@ fastify.get("/parse", async (req, reply) => {
       // Look for prompt reference like "$18" in the metadata
       const promptRef = songData.metadata.prompt;
       if (typeof promptRef === 'string' && promptRef.startsWith('$')) {
-        // Find the actual lyrics content in the streaming data
-        const lyricsMatches = html.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Intro\]|\[Outro\])[\s\S]*?)"\]\)/g);
+        // Find the actual lyrics content in the streaming data - look for the correct reference
+        const promptId = promptRef.substring(1); // Remove the $ prefix
+        
+        // Look for the specific prompt ID content, not just any lyrics
+        const specificPattern = new RegExp(`self\\.__next_f\\.push\\(\\[1,\\s*"([^"]*\\[(?:Intro|Verse|Chorus|Bridge|Outro)[^"]*)"\\]\\)`, 'g');
+        const lyricsMatches = html.match(specificPattern);
+        
         if (lyricsMatches) {
+          // Find the match that corresponds to our prompt ID or contains remix-specific content
           for (const match of lyricsMatches) {
             try {
               const content = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*)"/)?.[1];
-              if (content && (content.includes('[Verse') || content.includes('[Chorus'))) {
+              if (content && (content.includes('[Intro:') || content.includes('fridge') || content.includes('ambient'))) {
+                // This looks like the remix lyrics, not the original song
                 lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
                 break;
               }
             } catch (e) {
               // Continue searching
+            }
+          }
+        }
+        
+        // Fallback: look for any self.__next_f.push content that's NOT prefixed with a number:T pattern
+        if (!lyrics) {
+          const fallbackMatches = html.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Intro\]|\[Outro\])[\s\S]*?)"\]\)/g);
+          if (fallbackMatches) {
+            for (const match of fallbackMatches) {
+              try {
+                const content = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*)"/)?.[1];
+                // Skip content that starts with number:T pattern (original song lyrics)
+                if (content && !content.match(/^\d+:T[a-f0-9]+,/) && (content.includes('[Verse') || content.includes('[Chorus') || content.includes('[Intro'))) {
+                  lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+                  break;
+                }
+              } catch (e) {
+                // Continue searching
+              }
             }
           }
         }
