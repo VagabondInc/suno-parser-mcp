@@ -126,7 +126,7 @@ fastify.get("/parse", async (req, reply) => {
     let title = songData?.title || null;
     let artist = songData?.display_name || songData?.user?.display_name || null;
     let lyrics = songData?.metadata?.prompt || songData?.gpt_description_prompt || null;
-    let styles = songData?.metadata?.tags || null;
+    let styles = songData?.display_tags || songData?.metadata?.tags || null;
     
     // Extract negative_tags as style information when tags is empty
     if (!styles && songData?.metadata?.negative_tags) {
@@ -146,49 +146,17 @@ fastify.get("/parse", async (req, reply) => {
     
     // Extract lyrics from streaming data prompt references
     if (!lyrics && songData?.metadata?.prompt) {
-      // Look for prompt reference like "$18" in the metadata
+      // Look for prompt reference like "$12" in the metadata
       const promptRef = songData.metadata.prompt;
       if (typeof promptRef === 'string' && promptRef.startsWith('$')) {
-        // Find the actual lyrics content in the streaming data - look for the correct reference
-        const promptId = promptRef.substring(1); // Remove the $ prefix
+        const promptId = promptRef.substring(1); // Remove the $ prefix (e.g., "12")
         
-        // Look for the specific prompt ID content, not just any lyrics
-        const specificPattern = new RegExp(`self\\.__next_f\\.push\\(\\[1,\\s*"([^"]*\\[(?:Intro|Verse|Chorus|Bridge|Outro)[^"]*)"\\]\\)`, 'g');
-        const lyricsMatches = html.match(specificPattern);
+        // Look for the pattern: "12:T6af,..." which contains the actual lyrics
+        const lyricsPattern = new RegExp(`${promptId}:T[a-f0-9]+,([\\s\\S]*?)(?="\\]|$)`);
+        const lyricsMatch = html.match(lyricsPattern);
         
-        if (lyricsMatches) {
-          // Find the match that corresponds to our prompt ID or contains remix-specific content
-          for (const match of lyricsMatches) {
-            try {
-              const content = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*)"/)?.[1];
-              if (content && (content.includes('[Intro:') || content.includes('fridge') || content.includes('ambient'))) {
-                // This looks like the remix lyrics, not the original song
-                lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
-                break;
-              }
-            } catch (e) {
-              // Continue searching
-            }
-          }
-        }
-        
-        // Fallback: look for any self.__next_f.push content that's NOT prefixed with a number:T pattern
-        if (!lyrics) {
-          const fallbackMatches = html.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Intro\]|\[Outro\])[\s\S]*?)"\]\)/g);
-          if (fallbackMatches) {
-            for (const match of fallbackMatches) {
-              try {
-                const content = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*)"/)?.[1];
-                // Skip content that starts with number:T pattern (original song lyrics)
-                if (content && !content.match(/^\d+:T[a-f0-9]+,/) && (content.includes('[Verse') || content.includes('[Chorus') || content.includes('[Intro'))) {
-                  lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
-                  break;
-                }
-              } catch (e) {
-                // Continue searching
-              }
-            }
-          }
+        if (lyricsMatch && lyricsMatch[1]) {
+          lyrics = lyricsMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
         }
       }
     }
@@ -300,12 +268,17 @@ fastify.get("/parse", async (req, reply) => {
     // Provide debug info
     const rawHtmlSnippet = html.slice(0, 2000);
     
+    // Extract audio URL for transcription
+    const audioUrl = songData?.audio_url || null;
+    
     reply.send({
       url,
       title: clean(title),
       artist: clean(artist),
       lyrics: clean(lyrics),
       styles: clean(styles),
+      audio_url: audioUrl,
+      transcription_note: audioUrl ? "For accurate lyrics, consider using an LLM with audio transcription capabilities on the audio_url" : null,
       rawHtmlSnippet,
       songData: songData ? JSON.stringify(songData).slice(0, 500) : null, // Debug info
       debugInfo: {
@@ -316,7 +289,8 @@ fastify.get("/parse", async (req, reply) => {
           title: !!title,
           artist: !!artist, 
           lyrics: !!lyrics,
-          styles: !!styles
+          styles: !!styles,
+          audio_url: !!audioUrl
         }
       }
     });
