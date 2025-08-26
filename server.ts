@@ -146,17 +146,31 @@ fastify.get("/parse", async (req, reply) => {
     
     // Extract lyrics from streaming data prompt references
     if (!lyrics && songData?.metadata?.prompt) {
-      // Look for prompt reference like "$12" in the metadata
+      // Look for prompt reference like "$18" in the metadata
       const promptRef = songData.metadata.prompt;
       if (typeof promptRef === 'string' && promptRef.startsWith('$')) {
-        const promptId = promptRef.substring(1); // Remove the $ prefix (e.g., "12")
+        const promptId = promptRef.substring(1); // Remove the $ prefix (e.g., "18")
         
-        // Look for the pattern: "12:T6af,..." which contains the actual lyrics
-        const lyricsPattern = new RegExp(`${promptId}:T[a-f0-9]+,([\\s\\S]*?)(?="\\]|$)`);
-        const lyricsMatch = html.match(lyricsPattern);
+        // Find all self.__next_f.push chunks that match the prompt pattern
+        const promptPattern = new RegExp(`${promptId}:T[a-f0-9]+,([\\s\\S]*?)(?="\]|$)`, 'g');
+        const allMatches = [...html.matchAll(promptPattern)];
         
-        if (lyricsMatch && lyricsMatch[1]) {
-          lyrics = lyricsMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+        for (const match of allMatches) {
+          if (match[1]) {
+            // Get the full line/chunk containing this match to check for "clip"
+            const matchStart = html.lastIndexOf('self.__next_f.push', match.index || 0);
+            const matchEnd = html.indexOf('])', match.index || 0) + 2;
+            const fullChunk = html.substring(matchStart, matchEnd);
+            
+            // Skip chunks that contain "clip" (these are persona/original lyrics)
+            if (!fullChunk.includes('"clip"')) {
+              const content = match[1];
+              if (content && (content.includes('[Intro') || content.includes('[Verse') || content.includes('[Chorus'))) {
+                lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+                break;
+              }
+            }
+          }
         }
       }
     }
