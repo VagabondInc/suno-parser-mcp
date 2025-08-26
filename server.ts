@@ -27,18 +27,37 @@ fastify.get("/parse", async (req, reply) => {
     
     const html = await response.text();
     
-    // Extract JSON data from Next.js __NEXT_DATA__ script
-    const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+    // Extract JSON data from multiple possible script patterns
     let songData = null;
+    let allScriptData = {};
     
+    // Try __NEXT_DATA__ script
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
     if (nextDataMatch) {
       try {
         const nextData = JSON.parse(nextDataMatch[1]);
-        // Navigate through Next.js data structure to find song info
         const pageProps = nextData?.props?.pageProps;
-        songData = pageProps?.song || pageProps?.data;
+        songData = pageProps?.song || pageProps?.data || pageProps;
+        allScriptData.nextData = nextData;
       } catch (e) {
-        // Fall back to regex extraction if JSON parsing fails
+        // Continue to other extraction methods
+      }
+    }
+    
+    // Try other JSON script patterns that might contain song data
+    const allScripts = html.match(/<script[^>]*>(.*?)<\/script>/gs) || [];
+    for (const script of allScripts) {
+      const jsonMatch = script.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+      if (jsonMatch && jsonMatch[1].trim().startsWith('{')) {
+        try {
+          const jsonData = JSON.parse(jsonMatch[1]);
+          if (jsonData.title || jsonData.display_name || jsonData.metadata) {
+            songData = jsonData;
+            break;
+          }
+        } catch (e) {
+          // Continue searching
+        }
       }
     }
     
@@ -48,25 +67,60 @@ fastify.get("/parse", async (req, reply) => {
     let lyrics = songData?.metadata?.prompt || null;
     let styles = songData?.metadata?.tags || null;
     
-    // Additional fallback extractions from HTML if JSON data incomplete
+    // Extract from meta tags and other HTML patterns
     if (!title) {
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/);
-      title = titleMatch ? titleMatch[1].replace(' | Suno', '').trim() : null;
+      // Try various title extraction methods
+      const ogTitle = html.match(/<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\'][^>]*>/);
+      const twitterTitle = html.match(/<meta[^>]*name=["\']twitter:title["\'][^>]*content=["\']([^"\']+)["\'][^>]*>/);
+      const htmlTitle = html.match(/<title[^>]*>([^<]+)<\/title>/);
+      
+      title = (ogTitle && ogTitle[1]) || (twitterTitle && twitterTitle[1]) || 
+              (htmlTitle && htmlTitle[1].replace(' | Suno', '').trim()) || null;
     }
     
-    if (!lyrics && html.includes('Lyrics')) {
-      // Try to extract lyrics from visible text patterns
-      const lyricsMatch = html.match(/Lyrics[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
-      if (lyricsMatch) {
-        lyrics = lyricsMatch[1].replace(/<[^>]+>/g, '').trim() || null;
+    if (!artist) {
+      // Try to extract artist from meta description or other patterns
+      const descMatch = html.match(/<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*by\s+([^"\']+))["\'][^>]*>/);
+      if (descMatch && descMatch[2]) {
+        artist = descMatch[2].trim();
       }
     }
     
-    if (!styles && html.includes('Style')) {
-      // Try to extract styles from visible text patterns
-      const stylesMatch = html.match(/Style[s]?[\s\S]*?<div[^>]*>([\s\S]*?)<\/div>/);
-      if (stylesMatch) {
-        styles = stylesMatch[1].replace(/<[^>]+>/g, '').trim() || null;
+    if (!lyrics) {
+      // Try multiple patterns for lyrics extraction
+      const patterns = [
+        /prompt["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON prompt field
+        /lyrics["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON lyrics field
+        /"gpt_description_prompt":\s*"([^"]+)"/, // GPT prompt
+        /class=["\'][^"\']*lyrics[^"\']*["\'][^>]*>([^<]+)/, // CSS class
+        /data-[^=]*lyrics[^=]*=["\']([^"\']+)["\']/ // Data attribute
+      ];
+      
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match && match[1] && match[1].length > 10) {
+          lyrics = match[1].trim();
+          break;
+        }
+      }
+    }
+    
+    if (!styles) {
+      // Try multiple patterns for style/genre extraction
+      const patterns = [
+        /tags["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON tags field
+        /style["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON style field
+        /genre["\']?\s*:\s*["\']([^"\']+)["\']/, // JSON genre field
+        /class=["\'][^"\']*style[^"\']*["\'][^>]*>([^<]+)/, // CSS class
+        /class=["\'][^"\']*tag[^"\']*["\'][^>]*>([^<]+)/ // Tag class
+      ];
+      
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match && match[1]) {
+          styles = match[1].trim();
+          break;
+        }
       }
     }
     
@@ -90,7 +144,18 @@ fastify.get("/parse", async (req, reply) => {
       lyrics: clean(lyrics),
       styles: clean(styles),
       rawHtmlSnippet,
-      songData: songData ? JSON.stringify(songData).slice(0, 500) : null // Debug info
+      songData: songData ? JSON.stringify(songData).slice(0, 500) : null, // Debug info
+      debugInfo: {
+        hasNextData: !!nextDataMatch,
+        scriptCount: allScripts.length,
+        htmlLength: html.length,
+        foundPatterns: {
+          title: !!title,
+          artist: !!artist, 
+          lyrics: !!lyrics,
+          styles: !!styles
+        }
+      }
     });
   } catch (err: any) {
     reply.code(500).send({ error: "Failed to fetch or parse page", details: err?.message });
@@ -119,19 +184,43 @@ fastify.get("/extract", async (req, reply) => {
     
     const html = await response.text();
     
-    // Extract JSON data from Next.js __NEXT_DATA__ script
-    const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+    // Extract JSON data from multiple possible script patterns  
+    let songData = null;
+    let nextData = null;
     
-    if (!nextDataMatch) {
-      reply.code(404).send({ error: "No Next.js data found on page" });
-      return;
+    // Try __NEXT_DATA__ script
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+    if (nextDataMatch) {
+      try {
+        nextData = JSON.parse(nextDataMatch[1]);
+        const pageProps = nextData?.props?.pageProps;
+        songData = pageProps?.song || pageProps?.data || pageProps;
+      } catch (e) {
+        // Continue to other extraction methods
+      }
     }
     
-    let nextData;
-    try {
-      nextData = JSON.parse(nextDataMatch[1]);
-    } catch (e) {
-      reply.code(500).send({ error: "Failed to parse Next.js JSON data", details: e.message });
+    // Try other JSON script patterns
+    const allScripts = html.match(/<script[^>]*>(.*?)<\/script>/gs) || [];
+    if (!songData) {
+      for (const script of allScripts) {
+        const jsonMatch = script.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+        if (jsonMatch && jsonMatch[1].trim().startsWith('{')) {
+          try {
+            const jsonData = JSON.parse(jsonMatch[1]);
+            if (jsonData.title || jsonData.display_name || jsonData.metadata) {
+              songData = jsonData;
+              break;
+            }
+          } catch (e) {
+            // Continue searching
+          }
+        }
+      }
+    }
+    
+    if (!songData && !nextData) {
+      reply.code(404).send({ error: "No song data found on page" });
       return;
     }
     
