@@ -54,36 +54,47 @@ fastify.get("/parse", async (req, reply) => {
             if (jsonMatch && jsonMatch[1]) {
               const unescaped = jsonMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
               
-              // Try to parse as JSON
-              if (unescaped.includes('"title"') || unescaped.includes('"display_name"') || unescaped.includes('"metadata"')) {
-                const jsonData = JSON.parse(unescaped);
-                if (jsonData.title || jsonData.display_name || jsonData.metadata) {
-                  songData = jsonData;
-                  break;
-                }
-                
-                // Look for nested song data
-                function findSongData(obj: any): any {
-                  if (!obj || typeof obj !== 'object') return null;
-                  if (obj.title && (obj.metadata || obj.gpt_description_prompt)) return obj;
-                  if (Array.isArray(obj)) {
-                    for (const item of obj) {
-                      const found = findSongData(item);
-                      if (found) return found;
+              // Look for the clip data structure that contains song info
+              if (unescaped.includes('"clip":') && unescaped.includes('"status":"complete"')) {
+                try {
+                  const jsonData = JSON.parse(unescaped);
+                  
+                  // Look for nested song data in the clip structure
+                  function findSongData(obj: any): any {
+                    if (!obj || typeof obj !== 'object') return null;
+                    
+                    // Check if this is the clip object with song data
+                    if (obj.clip && obj.clip.title && obj.clip.metadata) {
+                      return obj.clip;
                     }
-                  } else {
-                    for (const key in obj) {
-                      const found = findSongData(obj[key]);
-                      if (found) return found;
+                    
+                    // Check if this is a direct song object
+                    if (obj.title && obj.metadata && (obj.audio_url || obj.id)) {
+                      return obj;
                     }
+                    
+                    if (Array.isArray(obj)) {
+                      for (const item of obj) {
+                        const found = findSongData(item);
+                        if (found) return found;
+                      }
+                    } else {
+                      for (const key in obj) {
+                        const found = findSongData(obj[key]);
+                        if (found) return found;
+                      }
+                    }
+                    return null;
                   }
-                  return null;
-                }
-                
-                const nestedSong = findSongData(jsonData);
-                if (nestedSong) {
-                  songData = nestedSong;
-                  break;
+                  
+                  const nestedSong = findSongData(jsonData);
+                  if (nestedSong) {
+                    songData = nestedSong;
+                    allScriptData.streamingData = jsonData;
+                    break;
+                  }
+                } catch (e) {
+                  // Continue searching
                 }
               }
             }
@@ -117,12 +128,42 @@ fastify.get("/parse", async (req, reply) => {
     let lyrics = songData?.metadata?.prompt || songData?.gpt_description_prompt || null;
     let styles = songData?.metadata?.tags || null;
     
+    // Extract negative_tags as style information when tags is empty
+    if (!styles && songData?.metadata?.negative_tags) {
+      // Convert negative tags to positive inference (what the song is NOT)
+      const negTags = songData.metadata.negative_tags;
+      styles = `NOT: ${negTags}`;
+    }
+    
     // Enhanced JSON data extraction from Next.js props
     if ((allScriptData as any).nextData?.props?.pageProps) {
       const props = (allScriptData as any).nextData.props.pageProps;
       if (props.song) {
         lyrics = lyrics || props.song.metadata?.prompt || props.song.gpt_description_prompt;
         styles = styles || props.song.metadata?.tags;
+      }
+    }
+    
+    // Extract lyrics from streaming data prompt references
+    if (!lyrics && songData?.metadata?.prompt) {
+      // Look for prompt reference like "$18" in the metadata
+      const promptRef = songData.metadata.prompt;
+      if (typeof promptRef === 'string' && promptRef.startsWith('$')) {
+        // Find the actual lyrics content in the streaming data
+        const lyricsMatches = html.match(/self\.__next_f\.push\(\[1,\s*"([^"]*(?:\[Verse\]|\[Chorus\]|\[Bridge\]|\[Intro\]|\[Outro\])[\s\S]*?)"\]\)/g);
+        if (lyricsMatches) {
+          for (const match of lyricsMatches) {
+            try {
+              const content = match.match(/self\.__next_f\.push\(\[1,\s*"([^"]*)"/)?.[1];
+              if (content && (content.includes('[Verse') || content.includes('[Chorus'))) {
+                lyrics = content.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_match: string, p1: string) => String.fromCharCode(parseInt(p1, 16))).trim();
+                break;
+              }
+            } catch (e) {
+              // Continue searching
+            }
+          }
+        }
       }
     }
     
